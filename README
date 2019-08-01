@@ -1,0 +1,18 @@
+Processor that handles a simplified MIPS instruction set. Created as the final project for CS3421 Computer Organization. Recieved 100% on the project.
+
+Instructions handled:
+add
+sub
+and
+or
+slt
+lw
+sw
+beq
+addi
+j
+ori
+andi
+slti
+bne
+addiu
