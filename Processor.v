@@ -1,3 +1,27 @@
+module ProcessorTest1(output reg F);
+	reg clk;							 
+	
+	Processor DUT(clk);
+	
+	
+	always
+	begin
+		clk = 1'b1;
+		#10;
+		clk = 1'b0;
+		#10;
+	end
+	
+//	always@(posedge clk)
+//	begin
+//		#1
+//		
+//	end
+
+	
+endmodule 
+
+
 module Processor(input CLK);
 	wire [31:0] pcPrime;
 	wire [31:0] pc;
@@ -5,6 +29,7 @@ module Processor(input CLK);
 	wire [31:0] RD1;
 	wire [31:0] RD2;
 	wire [31:0] SignImm;
+	wire [31:0] ZeroImm;
 	wire [4:0] WriteReg;
 	wire [31:0] Result;
 	wire [31:0] SrcB;
@@ -14,36 +39,45 @@ module Processor(input CLK);
 	wire [31:0] pcb;
 	wire [31:0] shiftOut;
 	wire cout;
-	wire PCSrc;
+	wire [1:0] PCSrc;
+	wire zero;
+	wire [31:0] mx2mx;
+	wire [31:0] JLine;
 	
 	wire MemtoReg;
 	wire MemWrite;
-	wire Branch;
+	wire BranchEQ;
+	wire BranchNE;
 	wire [2:0] ALUControl;
-	wire ALUSrc;
+	wire [1:0] ALUSrc;
 	wire RegDst;
 	wire RegWrite;
-	
-	parameter zero = 1'b0;
+	wire Jump;	
 	
 	
 	PC PC1(CLK, pcPrime, pc);
 	InstructionMemory IM(pc, Instr);
 	RegFile RF(CLK, RegWrite, Instr[25:21], Instr[20:16], WriteReg, Result, RD1, RD2);
-	ControlUnit CU(Instr[31:26], Instr[5:0], MemtoReg, MemWrite, Branch, ALUSrc, RegDst, RegWrite, ALUControl);
+	ControlUnit CU(Instr[31:26], Instr[5:0], MemtoReg, MemWrite, BranchEQ, BranchNE, ALUSrc, RegDst, RegWrite, Jump, ALUControl);
 	ALU A(RD1, SrcB, ALUControl, ALUResult);
 	DataMem DM(CLK, MemWrite, ALUResult, RD2, ReadData);
 	SignExtend SE(Instr[15:0], SignImm);
+	ZeroExtend16to32 ZE(Instr[15:0], ZeroImm);
 	PCPlus4 pc4(pc, pcp4);
 	Shifter SH(SignImm, shiftOut);
-	adder32 pcBranch(shiftOut, pcp4, zero, pcb, cout);
+	adder32 pcBranch(shiftOut, pcp4, 1'b0, pcb, cout);
 	
-	assign PCSrc = Branch & zero;
-	
-	mux2to1 mx0(PCSrc, pcp4, pcb, pcPrime);
+	assign zero = (ALUResult==0);
+	assign PCSrc[1] = BranchEQ & zero;
+	assign PCSrc[0] = BranchNE & (!zero);
+	assign JLine[31:26] = pcp4[31:26];
+	assign JLine[25:0] = Instr[25:0];
+
+	mux4to1 mx0(PCSrc, pcp4, pcb, pcb, 32'bx, mx2mx);
 	mux2to1_5 mx1(RegDst, Instr[20:16], Instr[15:11], WriteReg);
-	mux2to1 mx2(ALUSrc, RD2, SignImm, SrcB);
+	mux4to1 mx2(ALUSrc, RD2, SignImm, ZeroImm, 32'bx, SrcB);
 	mux2to1 mx3(MemtoReg, ALUResult, ReadData, Result);
+	mux2to1 mxJ(Jump, mx2mx, JLine, pcPrime);
 
 	
 endmodule
@@ -53,27 +87,31 @@ module ControlUnit(input [5:0] opcode,
 			input [5:0] funct,
 			output reg MemtoReg,
 			output reg MemWrite,
-			output reg Branch,
-			output reg ALUSrc,
+			output reg BranchEQ,
+			output reg BranchNE,
+			output reg [1:0] ALUSrc,
 			output reg RegDst,
 			output reg RegWrite,
+			output reg Jump,
 			output reg [2:0] ALUControl);
 			
-	always @(opcode)
+	always @(opcode, funct)
 	begin
 		MemtoReg = 1'b0;
 		MemWrite = 1'b0;
-		Branch = 1'b0;
-		ALUSrc = 1'b0;
+		BranchEQ = 1'b0;
+		BranchNE = 1'b0;
+		ALUSrc = 2'b00;
 		RegDst = 1'b0;
 		RegWrite = 1'b0;
+		Jump = 1'b0;
 		ALUControl = 3'b000;
 		if (opcode == 6'b000000)
 		begin
 			RegWrite = 1'b1;
 			RegDst = 1'b1;
 			case (funct)
-				6'b100000: ALUControl = 3'b000; // Add
+				6'b100000: ALUControl = 3'b010; // Add
 				6'b100010: ALUControl = 3'b110; // Sub
 				6'b100100: ALUControl = 3'b000; // And
 				6'b100101: ALUControl = 3'b001; // Or
@@ -88,7 +126,7 @@ module ControlUnit(input [5:0] opcode,
 				6'b100011:
 				begin
 					RegWrite = 1'b1;
-					ALUSrc = 1'b1;
+					ALUSrc = 2'b01;
 					MemtoReg = 1'b1;
 					ALUControl = 3'b010;
 				end
@@ -96,7 +134,7 @@ module ControlUnit(input [5:0] opcode,
 				6'b101011:
 				begin
 					RegDst = 1'bx;
-					ALUSrc = 1'b1;
+					ALUSrc = 2'b01;
 					MemWrite = 1'b1;
 					MemtoReg = 1'bx;
 					ALUControl = 3'b010;
@@ -105,18 +143,71 @@ module ControlUnit(input [5:0] opcode,
 				6'b000100:
 				begin
 					RegDst = 1'bx;
-					Branch = 1'b1;
+					BranchEQ = 1'b1;
 					MemtoReg = 1'bx;
 					ALUControl = 3'b110;
+				end
+				// ADDI
+				6'b001000:
+				begin
+					RegWrite = 1'b1;
+					ALUSrc = 2'b01;
+					ALUControl = 3'b010;
+				end
+				// J
+				6'b000010:
+				begin
+					RegDst = 1'bx;
+					ALUSrc = 2'bxx;
+					BranchEQ = 1'bx;
+					MemtoReg = 1'bx;
+					Jump= 1'b1;
+				end
+				//ORI
+				6'b001101:
+				begin
+					RegWrite = 1'b1;
+					ALUSrc = 2'b01;
+					ALUControl = 3'b001;
+				end
+				//ANDI
+				6'b001100:
+				begin
+					RegWrite = 1'b1;
+					ALUSrc = 2'b01;
+					ALUControl = 3'b000;
+				end
+				//SLTI
+				6'b001010:
+				begin
+					RegWrite = 1'b1;
+					ALUSrc = 2'b01;
+					ALUControl = 3'b111;
+				end
+				//BNE
+				6'b000101:
+				begin
+					RegDst = 1'bx;
+					BranchNE = 1'b1;
+					MemtoReg = 1'bx;
+					ALUControl = 3'b110;
+				end
+				// ADDIU
+				6'b001001:
+				begin
+					RegWrite = 1'b1;
+					ALUSrc = 2'b10;
+					ALUControl = 3'b010;
 				end
 				default:
 				begin
 					MemtoReg = 1'bx;
 					MemWrite = 1'bx;
-					Branch = 1'bx;
-					ALUSrc = 1'bx;
+					BranchEQ = 1'bx;
+					ALUSrc = 2'bxx;
 					RegDst = 1'bx;
 					RegWrite = 1'bx;
+					Jump= 1'bx;
 					ALUControl = 3'bxxx;
 				end
 			endcase
@@ -132,11 +223,18 @@ module PC(input CLK,
 			output reg [31:0] dataOut);
 			
 	reg [31:0] pcreg;
+	initial
+	begin
+		pcreg = 32'b0;
+	end
 	
 	always @(posedge CLK)
 	begin
-		pcreg <= dataIn;
 		dataOut = pcreg;
+	end
+		always @(negedge CLK)
+	begin
+		pcreg <= dataIn;
 	end
 endmodule
 
@@ -147,7 +245,7 @@ module InstructionMemory(input [31:0] A,
 	reg [31:0] instMemory [0:1023];
 	initial
 	begin
-		$readmemh("C:/altera_lite/16.0/Processor/simple.out", instMemory);
+		$readmemh("C:/altera_lite/16.0/Processor/t3test1.out", instMemory);
 	end
 	
 	always @(A)
@@ -167,19 +265,28 @@ module RegFile(input CLK,
 			output reg [31:0] RD2);
 			
 	reg [31:0] gpreg [0:31];
+	reg [31:0] i;
+	
+	initial
+	begin
+		for (i=0; i<32; i=i+1)
+		begin
+			gpreg[i] <= 32'b0;
+		end
+	end
+	
+	always @(*)
+	begin
+		RD1 <= gpreg[A1];
+		RD2 <= gpreg[A2];
+	end
 	
 	always @(negedge CLK)
 	begin
 		if (WE3 == 1'b1)
 		begin
-			gpreg[A3] <= WD3;
+				gpreg[A3] <= WD3;
 		end
-	end
-	
-	always @(posedge CLK)
-	begin
-		RD1 <= gpreg[A1];
-		RD2 <= gpreg[A2];
 	end
 endmodule
 
@@ -191,15 +298,30 @@ module DataMem(input CLK,
 			output reg [31:0] RD);
 
 	reg [31:0] dataMemory [0:1023];
+	reg [31:0] i;
 	
-	always @ ( posedge CLK )
+	initial
+	begin
+		for (i=0; i<1024; i=i+1)
+		begin
+			dataMemory[i] <= 32'b0;
+		end
+	end
+	
+	always @(A)
+	begin
+		RD <= dataMemory[A];
+	end
+	
+	always @(negedge CLK)
 	begin
 		if (WE == 1'b1)
 		begin
 			dataMemory[A] <= WD;
 		end
-		RD <= dataMemory[A];
 	end
+	
+
 endmodule
 
 
@@ -233,12 +355,18 @@ module SignExtend(input [15:0] in,
 	assign out[15:0] = in[15:0];
 endmodule
 
+/* Zero Extender */
+module ZeroExtend16to32(input [15:0] dataIn,
+				output [31:0] dataOut);
+	assign dataOut = 32'b0 + dataIn;
+endmodule
+
 /* PC plus 4 */
 module PCPlus4(input [31:0] PC,
 			output [31:0] out);
 	wire Cout;
 //	adder32 add4(PC, 4, 1'b0, out, Cout);
-	assign out = PC;
+	adder32 add4(PC, 32'b00000000000000000000000000000001, 1'b0, out, Cout);
 endmodule
 
 /*Shifter*/
